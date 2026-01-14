@@ -139,22 +139,6 @@ jobs:
       APP_BUILD_NUMBER: ${{ needs.init.outputs.app-build-number }}
 
     steps:
-      - name: Cleanup runner logs and cache
-        if: matrix.platform == 'android' && runner.os == 'Linux'
-        run: |
-          echo "Cleaning up runner logs and cache..."
-          # Clean runner diagnostic logs
-          sudo rm -rf /home/runner/actions-runner/_diag/* || true
-          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
-          # Clean runner cache
-          sudo rm -rf /home/runner/actions-runner/cached/* || true
-          # Clean system logs
-          sudo journalctl --vacuum-time=1d || true
-          sudo rm -rf /var/log/*.gz || true
-          sudo rm -rf /var/log/*.log || true
-          # Show disk space before maximize-build-space
-          df -h
-
       - name: Free Disk Space
         if: matrix.platform == 'android' && runner.os == 'Linux'
         uses: easimon/maximize-build-space@master
