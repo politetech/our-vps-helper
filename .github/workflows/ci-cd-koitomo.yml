@@ -1,0 +1,310 @@
+name: 'CI/CD: Koitomo'
+
+on:
+  repository_dispatch:
+    types:
+      - Koitomo-*
+
+env:
+  APP_NAME: Koitomo
+  BITBUCKET_REPO_URL: ${{ vars.BITBUCKET_REPO_URL }}
+
+  UTILS_SH: ${{ vars.UTILS_SH_FILE }}
+  
+  BUILD_MATRIX: '${{ vars.BUILD_MATRIX }}'
+  BUILD_MATRIX_PRD: '${{ vars.BUILD_MATRIX_PRD }}'
+
+  REF_NAME: ${{ github.event.client_payload.ref_name }}
+  TRIGGERING_ACTOR: ${{ github.event.client_payload.triggering_actor }}
+  FIREBASE_CLI_TOKEN: ${{ secrets.FIREBASE_CLI_TOKEN }}
+
+  TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ vars.TELEGRAM_CHAT_ID }}
+
+jobs:
+  init:
+    name: Init
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.value }}
+      env: ${{ steps.set-env.outputs.value }}
+      message-information: ${{ steps.get-message-information.outputs.value }}
+      app-version: ${{ steps.get-app-infomation.outputs.version-value }}
+      app-build-number: ${{ steps.get-app-infomation.outputs.build-number-value }}
+    steps:
+      - name: Setup SSH key for initial checkout
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H bitbucket.org >> ~/.ssh/known_hosts
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Checkout
+        run: |
+          # Clean workspace if it exists (after maximize-build-space remount)
+          rm -rf * .[^.]* 2>/dev/null || true
+          git clone ${{ env.BITBUCKET_REPO_URL }} .
+          git checkout ${{ github.event.client_payload.ref_name }}
+
+      - name: Checkout secret
+        run: |
+          mkdir -p .github/data/key
+          git clone git@github.com:politetech/secret.git .github/data/key
+
+      - name: Setup SSH from secret repo
+        if: success()
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/.github/data/key/rsa/id" ]; then
+            chmod 400 $GITHUB_WORKSPACE/.github/data/key/rsa/id
+            export GIT_SSH_COMMAND="ssh -i $GITHUB_WORKSPACE/.github/data/key/rsa/id -o StrictHostKeyChecking=no"
+            echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >> $GITHUB_ENV
+          fi
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          MATRIX='${{ env.BUILD_MATRIX }}'
+          if [[ "$REF_NAME" =~ "prd" ]]; then
+            MATRIX='${{ env.BUILD_MATRIX_PRD }}'
+          fi
+          # Filter out iOS builds temporarily
+          MATRIX_FILTERED=$(echo "$MATRIX" | jq '[.[] | select(.platform != "ios")]')
+          echo "value<<EOF" >> $GITHUB_OUTPUT
+          echo "$MATRIX_FILTERED" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Set env
+        id: set-env
+        run: |
+          ENV='dev'
+          if [[ "$REF_NAME" =~ "prd" ]]; then
+            ENV='prd'
+          elif [[ "$REF_NAME" =~ "stg" ]]; then
+            ENV='stg'
+          fi
+          echo "value=$ENV" >> $GITHUB_OUTPUT
+
+      - name: Generate message
+        id: get-message-information
+        timeout-minutes: 1
+        run: |
+          source /dev/stdin <<<"$(curl -s ${{ env.UTILS_SH }})" 
+          MESSAGE=$(get_message_information)
+          # Convert \n to actual newlines
+          MESSAGE=$(echo -e "$MESSAGE")
+          echo "value<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$MESSAGE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Generate app information
+        id: get-app-infomation
+        timeout-minutes: 1
+        run: |
+          source /dev/stdin <<<"$(curl -s ${{ env.UTILS_SH }})" 
+          echo "version-value=$(get_version)" >> "$GITHUB_OUTPUT" 
+          echo "build-number-value=$(get_build_number)" >> "$GITHUB_OUTPUT"
+
+      # - name: Send message
+      #   uses: appleboy/telegram-action@master
+      #   with:
+      #     to: ${{ env.TELEGRAM_CHAT_ID }}
+      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
+      #     message: '🎬 -  Start build: ${{ steps.get-message-information.outputs.value }}'
+
+      - name: Log value
+        run: |
+          echo "tag-source: $REF_NAME"
+          echo "matrix: ${{ steps.set-matrix.outputs.value }}"
+          echo "message-information: ${{ steps.get-message-information.outputs.value }}"
+          echo "version: ${{ steps.get-app-infomation.outputs.version-value }}"
+          echo "build number: ${{ steps.get-app-infomation.outputs.build-number-value }}"
+          echo "env: ${{ steps.set-env.outputs.value }}"
+
+  deploy:
+    name: Deployment ${{ matrix.format }}
+    needs: [init]
+    continue-on-error: true
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJson(needs.init.outputs.matrix) }}
+    runs-on: ${{ matrix.name }}
+    env:
+      APP_VARIANT: ${{ needs.init.outputs.env }}
+      APP_VERSION: ${{ needs.init.outputs.app-version }}
+      APP_BUILD_NUMBER: ${{ needs.init.outputs.app-build-number }}
+
+    steps:
+      - name: Cleanup runner logs and cache
+        if: matrix.platform == 'android' && runner.os == 'Linux'
+        run: |
+          echo "Cleaning up runner logs and cache..."
+          # Clean runner diagnostic logs
+          sudo rm -rf /home/runner/actions-runner/_diag/* || true
+          sudo rm -rf /home/runner/actions-runner/cached/_diag/* || true
+          # Clean runner cache
+          sudo rm -rf /home/runner/actions-runner/cached/* || true
+          # Clean system logs
+          sudo journalctl --vacuum-time=1d || true
+          sudo rm -rf /var/log/*.gz || true
+          sudo rm -rf /var/log/*.log || true
+          # Show disk space before maximize-build-space
+          df -h
+
+      - name: Free Disk Space
+        if: matrix.platform == 'android' && runner.os == 'Linux'
+        uses: easimon/maximize-build-space@master
+        with:
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-android: 'false'
+          remove-docker-images: 'true'
+
+      - name: Cleanup disk space
+        if: matrix.platform == 'android' && runner.os == 'Linux'
+        run: |
+          echo "Cleaning up additional disk space..."
+          npm cache clean --force || true
+          rm -rf ~/.gradle/caches/*/generated-gradle-jars || true
+          rm -rf ~/.gradle/daemon/* || true
+          rm -rf ~/.android/build-cache || true
+          df -h
+
+      - name: Setup SSH key for initial checkout
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H bitbucket.org >> ~/.ssh/known_hosts
+          ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+
+      - name: Checkout
+        run: |
+          # Clean workspace if it exists (after maximize-build-space remount)
+          rm -rf * .[^.]* 2>/dev/null || true
+          git clone ${{ env.BITBUCKET_REPO_URL }} .
+          git checkout ${{ github.event.client_payload.ref_name }}
+
+      - name: Checkout secret
+        run: |
+          mkdir -p .github/data/key
+          git clone git@github.com:politetech/secret.git .github/data/key
+
+      - name: Setup SSH from secret repo
+        if: success()
+        run: |
+          if [ -f "$GITHUB_WORKSPACE/.github/data/key/rsa/id" ]; then
+            chmod 400 $GITHUB_WORKSPACE/.github/data/key/rsa/id
+            export GIT_SSH_COMMAND="ssh -i $GITHUB_WORKSPACE/.github/data/key/rsa/id -o StrictHostKeyChecking=no"
+            echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >> $GITHUB_ENV
+          fi
+
+      # - name: Setup env
+      #   run: mv config/env/.env.${{ env.APP_VARIANT }} .env
+
+      - name: Setup nodejs
+        uses: actions/setup-node@v4
+        with:
+          cache: 'npm'
+          node-version-file: '.nvmrc'
+
+      - name: Setup ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: .ruby-version
+          bundler-cache: true
+
+      - name: Install fastlane plugins
+        run: bundle exec fastlane install_plugins
+
+      - name: Cache node_module
+        id: cache-node-module
+        uses: actions/cache@v4
+        with:
+          path: node_modules
+          key: ${{ matrix.platform }}-cache-node-module-${{ hashFiles('app.config.js') }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Run npm install
+        if: steps.cache-node-module.outputs.cache-hit != 'true'
+        run: npm install
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        if: matrix.platform == 'android'
+        with:
+          java-version: 17
+          distribution: 'temurin'
+          cache: 'gradle'
+
+      - name: Setup Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
+      # - name: Cache ios deriveddata
+      #   uses: irgaly/xcode-cache@v1
+      #   if: matrix.platform == 'ios'
+      #   with:
+      #     key: xcode-cache-deriveddata-${{ env.APP_VARIANT }}-${{ github.workflow }}-${{ github.sha }}
+      #     restore-keys: xcode-cache-deriveddata-${{ env.APP_VARIANT }}-${{ github.workflow }}-
+
+      - name: Config environment
+        run: bash scripts/config_environment.sh
+
+      # - name: Fastlane match
+      #   if: matrix.platform == 'ios'
+      #   run: bundle exec fastlane ios certificates && bundle exec fastlane ios update_settings
+
+      - name: Update version and build number
+        run: bundle exec fastlane ${{ matrix.platform }} update_version_and_build_number
+
+      # - name: Check cache Pods
+      #   if: matrix.format == 'IPA'
+      #   id: cache-primes
+      #   uses: actions/cache@v4
+      #   with:
+      #     path: |
+      #       ios/Pods
+      #       ios/Podfile.lock
+      #     key: vtd-cache-pods-${{ hashFiles('pubspec.lock') }}
+
+      # - name: Pod install
+      #   # if: ${{ (matrix.format == 'IPA') && (steps.cache-primes.outputs.cache-hit != 'true') }}
+      #   if: matrix.format == 'IPA'
+      #   working-directory: ios
+      #   run: bundle exec pod install
+
+      - name: Clean Android build artifacts
+        if: matrix.platform == 'android'
+        run: |
+          cd android || true
+          ./gradlew clean || true
+          rm -rf .gradle build app/build || true
+          cd ..
+
+      - name: Build ${{ matrix.format }}
+        id: build
+        run: bundle exec fastlane ${{ matrix.platform }} build_${{ matrix.format }}
+
+      - name: Deploy ${{ matrix.format }}
+        if: success() && steps.build.outcome == 'success'
+        run: bundle exec fastlane ${{ matrix.platform }} deploy_${{ matrix.format }}
+
+      # - name: Send message
+      #   uses: appleboy/telegram-action@master
+      #   with:
+      #     to: ${{ env.TELEGRAM_CHAT_ID }}
+      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
+      #     message: "✅ - Success ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}"
+
+      # - name: Send message
+      #   if: failure()
+      #   uses: appleboy/telegram-action@master
+      #   with:
+      #     to: ${{ env.TELEGRAM_CHAT_ID }}
+      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
+      #     message: "💥 - Failure ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}"
