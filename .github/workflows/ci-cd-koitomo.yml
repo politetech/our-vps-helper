@@ -42,8 +42,6 @@ jobs:
 
       - name: Checkout
         run: |
-          # Clean workspace if it exists (after maximize-build-space remount)
-          rm -rf * .[^.]* 2>/dev/null || true
           git clone ${{ env.BITBUCKET_REPO_URL }} .
           git checkout ${{ github.event.client_payload.ref_name }}
 
@@ -85,6 +83,8 @@ jobs:
             ENV='prd'
           elif [[ "$REF_NAME" =~ "stg" ]]; then
             ENV='stg'
+          elif [[ "$REF_NAME" =~ "qa" ]]; then
+            ENV='qa'
           fi
           echo "value=$ENV" >> $GITHUB_OUTPUT
 
@@ -108,12 +108,12 @@ jobs:
           echo "version-value=$(get_version)" >> "$GITHUB_OUTPUT" 
           echo "build-number-value=$(get_build_number)" >> "$GITHUB_OUTPUT"
 
-      # - name: Send message
-      #   uses: appleboy/telegram-action@master
-      #   with:
-      #     to: ${{ env.TELEGRAM_CHAT_ID }}
-      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
-      #     message: '🎬 -  Start build: ${{ steps.get-message-information.outputs.value }}'
+      - name: Send message
+        run: |
+          curl -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"🎬 - Start build: ${{ steps.get-message-information.outputs.value }}\", \"disable_notification\": false}" \
+            https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
 
       - name: Log value
         run: |
@@ -139,25 +139,25 @@ jobs:
       APP_BUILD_NUMBER: ${{ needs.init.outputs.app-build-number }}
 
     steps:
-      - name: Free Disk Space
-        if: matrix.platform == 'android' && runner.os == 'Linux'
-        uses: easimon/maximize-build-space@master
-        with:
-          remove-dotnet: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-android: 'false'
-          remove-docker-images: 'true'
-
-      - name: Cleanup disk space
+      - name: Free up disk space (RN Android only)
         if: matrix.platform == 'android' && runner.os == 'Linux'
         run: |
-          echo "Cleaning up additional disk space..."
-          npm cache clean --force || true
-          rm -rf ~/.gradle/caches/*/generated-gradle-jars || true
-          rm -rf ~/.gradle/daemon/* || true
-          rm -rf ~/.android/build-cache || true
-          df -h
+          echo "Before cleanup:"
+          df -h /
+
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc /usr/local/.ghcup
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /usr/lib/llvm-*
+          sudo rm -rf /usr/share/miniconda
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+
+          docker image prune -af || true
+
+          echo "After cleanup:"
+          df -h /
 
       - name: Setup SSH key for initial checkout
         run: |
@@ -169,8 +169,6 @@ jobs:
 
       - name: Checkout
         run: |
-          # Clean workspace if it exists (after maximize-build-space remount)
-          rm -rf * .[^.]* 2>/dev/null || true
           git clone ${{ env.BITBUCKET_REPO_URL }} .
           git checkout ${{ github.event.client_payload.ref_name }}
 
@@ -225,9 +223,35 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (minimal)
         if: matrix.platform == 'android'
-        uses: android-actions/setup-android@v3
+        run: |
+          export ANDROID_HOME=$HOME/android-sdk
+          # Unset ANDROID_SDK_ROOT to avoid conflict (Gradle requires only one)
+          unset ANDROID_SDK_ROOT || true
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=" >> $GITHUB_ENV
+          echo "PATH=$PATH" >> $GITHUB_ENV
+          
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          cd $ANDROID_HOME/cmdline-tools
+          
+          echo "Downloading Android command-line tools..."
+          curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdline-tools.zip
+          rm cmdline-tools.zip
+          mv cmdline-tools latest
+          
+          echo "Installing minimal Android SDK components..."
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.1.12297006"
+          
+          echo "Android SDK installed successfully"
+          df -h
 
       # - name: Cache ios deriveddata
       #   uses: irgaly/xcode-cache@v1
@@ -262,14 +286,6 @@ jobs:
       #   working-directory: ios
       #   run: bundle exec pod install
 
-      - name: Clean Android build artifacts
-        if: matrix.platform == 'android'
-        run: |
-          cd android || true
-          ./gradlew clean || true
-          rm -rf .gradle build app/build || true
-          cd ..
-
       - name: Build ${{ matrix.format }}
         id: build
         run: bundle exec fastlane ${{ matrix.platform }} build_${{ matrix.format }}
@@ -278,17 +294,18 @@ jobs:
         if: success() && steps.build.outcome == 'success'
         run: bundle exec fastlane ${{ matrix.platform }} deploy_${{ matrix.format }}
 
-      # - name: Send message
-      #   uses: appleboy/telegram-action@master
-      #   with:
-      #     to: ${{ env.TELEGRAM_CHAT_ID }}
-      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
-      #     message: "✅ - Success ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}"
+      - name: Send message
+        if: success()
+        run: |
+          curl -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"✅ - Success ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}\", \"disable_notification\": false}" \
+            https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
 
-      # - name: Send message
-      #   if: failure()
-      #   uses: appleboy/telegram-action@master
-      #   with:
-      #     to: ${{ env.TELEGRAM_CHAT_ID }}
-      #     token: ${{ env.TELEGRAM_BOT_TOKEN }}
-      #     message: "💥 - Failure ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}"
+      - name: Send message
+        if: failure()
+        run: |
+          curl -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"💥 - Failure ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}\", \"disable_notification\": false}" \
+            https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
