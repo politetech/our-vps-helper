@@ -215,6 +215,20 @@ jobs:
         if: steps.cache-node-module.outputs.cache-hit != 'true'
         run: npm install
 
+      - name: Cache CMake builds
+        if: matrix.platform == 'android'
+        uses: actions/cache@v4
+        with:
+          path: |
+            node_modules/react-native-filament/android/.cxx/**
+            node_modules/react-native-worklets-core/android/.cxx/**
+            node_modules/react-native-nitro-modules/android/.cxx/**
+            node_modules/react-native-worklets/android/.cxx/**
+            node_modules/react-native-vision-camera/android/.cxx/**
+          key: cmake-builds-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            cmake-builds-${{ runner.os }}-
+
       - name: Set up JDK
         uses: actions/setup-java@v4
         if: matrix.platform == 'android'
@@ -223,35 +237,37 @@ jobs:
           distribution: 'temurin'
           cache: 'gradle'
 
-      - name: Setup Android SDK (minimal)
+      - name: Cache Gradle wrapper
+        if: matrix.platform == 'android'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+
+      - name: Cache Android SDK licenses
+        if: matrix.platform == 'android'
+        uses: actions/cache@v4
+        with:
+          path: ~/.android
+          key: android-licenses-${{ runner.os }}
+          restore-keys: |
+            android-licenses-${{ runner.os }}-
+
+      - name: Setup Android SDK
+        if: matrix.platform == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
         if: matrix.platform == 'android'
         run: |
-          export ANDROID_HOME=$HOME/android-sdk
-          # Unset ANDROID_SDK_ROOT to avoid conflict (Gradle requires only one)
-          unset ANDROID_SDK_ROOT || true
-          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=" >> $GITHUB_ENV
-          echo "PATH=$PATH" >> $GITHUB_ENV
-          
-          mkdir -p $ANDROID_HOME/cmdline-tools
-          cd $ANDROID_HOME/cmdline-tools
-          
-          echo "Downloading Android command-line tools..."
-          curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-          unzip -q cmdline-tools.zip
-          rm cmdline-tools.zip
-          mv cmdline-tools latest
-          
-          echo "Installing minimal Android SDK components..."
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "platform-tools" \
+          sdkmanager --install \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;27.1.12297006"
-          
-          echo "Android SDK installed successfully"
-          df -h
+            "ndk;27.0.12077973" \
+            "cmake;3.22.1"
 
       # - name: Cache ios deriveddata
       #   uses: irgaly/xcode-cache@v1
@@ -262,6 +278,48 @@ jobs:
 
       - name: Config environment
         run: bash scripts/config_environment.sh
+
+      - name: Configure Gradle for Android optimization
+        if: matrix.platform == 'android'
+        run: |
+          GRADLE_PROPERTIES="android/gradle.properties"
+          LOCAL_PROPERTIES="android/local.properties"
+          
+          # Create gradle.properties if it doesn't exist
+          mkdir -p android
+          touch "$GRADLE_PROPERTIES"
+          
+          # Disable Gradle auto SDK download (use pre-installed SDK)
+          if ! grep -q "android.builder.sdkDownload" "$GRADLE_PROPERTIES"; then
+            echo "" >> "$GRADLE_PROPERTIES"
+            echo "# Disable auto SDK download to use pre-installed SDK" >> "$GRADLE_PROPERTIES"
+            echo "android.builder.sdkDownload=false" >> "$GRADLE_PROPERTIES"
+          else
+            sed -i 's/android.builder.sdkDownload=.*/android.builder.sdkDownload=false/' "$GRADLE_PROPERTIES"
+          fi
+          
+          # Limit ABI for QA builds (only arm64-v8a for faster builds)
+          # Set via gradle property that can be read in build.gradle
+          if [[ "${{ env.APP_VARIANT }}" == "qa" ]]; then
+            if ! grep -q "android.injected.build.abi" "$GRADLE_PROPERTIES"; then
+              echo "" >> "$GRADLE_PROPERTIES"
+              echo "# Limit ABI for QA builds (arm64-v8a only - fastest for testing)" >> "$GRADLE_PROPERTIES"
+              echo "android.injected.build.abi=arm64-v8a" >> "$GRADLE_PROPERTIES"
+            else
+              sed -i 's/android.injected.build.abi=.*/android.injected.build.abi=arm64-v8a/' "$GRADLE_PROPERTIES"
+            fi
+            
+            # Also set as environment variable for Gradle to pick up
+            echo "ABI_FILTERS=arm64-v8a" >> $GITHUB_ENV
+            echo "✅ ABI limited to arm64-v8a for QA build"
+          else
+            # Remove ABI filter for non-QA builds (build all ABIs for production)
+            sed -i '/android.injected.build.abi=/d' "$GRADLE_PROPERTIES"
+            echo "✅ Building all ABIs for ${{ env.APP_VARIANT }}"
+          fi
+          
+          echo "📋 Gradle properties configured:"
+          cat "$GRADLE_PROPERTIES" | grep -E "(sdkDownload|android.injected.build.abi)" || true
 
       # - name: Fastlane match
       #   if: matrix.platform == 'ios'
