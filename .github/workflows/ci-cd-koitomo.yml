@@ -278,49 +278,7 @@ jobs:
 
       - name: Config environment
         run: bash scripts/config_environment.sh
-
-      - name: Configure Gradle for Android optimization
-        if: matrix.platform == 'android'
-        run: |
-          GRADLE_PROPERTIES="android/gradle.properties"
-          LOCAL_PROPERTIES="android/local.properties"
-          
-          # Create gradle.properties if it doesn't exist
-          mkdir -p android
-          touch "$GRADLE_PROPERTIES"
-          
-          # Disable Gradle auto SDK download (use pre-installed SDK)
-          if ! grep -q "android.builder.sdkDownload" "$GRADLE_PROPERTIES"; then
-            echo "" >> "$GRADLE_PROPERTIES"
-            echo "# Disable auto SDK download to use pre-installed SDK" >> "$GRADLE_PROPERTIES"
-            echo "android.builder.sdkDownload=false" >> "$GRADLE_PROPERTIES"
-          else
-            sed -i 's/android.builder.sdkDownload=.*/android.builder.sdkDownload=false/' "$GRADLE_PROPERTIES"
-          fi
-          
-          # Limit ABI for QA builds (only arm64-v8a for faster builds)
-          # Set via gradle property that can be read in build.gradle
-          if [[ "${{ env.APP_VARIANT }}" == "qa" ]]; then
-            if ! grep -q "android.injected.build.abi" "$GRADLE_PROPERTIES"; then
-              echo "" >> "$GRADLE_PROPERTIES"
-              echo "# Limit ABI for QA builds (arm64-v8a only - fastest for testing)" >> "$GRADLE_PROPERTIES"
-              echo "android.injected.build.abi=arm64-v8a" >> "$GRADLE_PROPERTIES"
-            else
-              sed -i 's/android.injected.build.abi=.*/android.injected.build.abi=arm64-v8a/' "$GRADLE_PROPERTIES"
-            fi
-            
-            # Also set as environment variable for Gradle to pick up
-            echo "ABI_FILTERS=arm64-v8a" >> $GITHUB_ENV
-            echo "✅ ABI limited to arm64-v8a for QA build"
-          else
-            # Remove ABI filter for non-QA builds (build all ABIs for production)
-            sed -i '/android.injected.build.abi=/d' "$GRADLE_PROPERTIES"
-            echo "✅ Building all ABIs for ${{ env.APP_VARIANT }}"
-          fi
-          
-          echo "📋 Gradle properties configured:"
-          cat "$GRADLE_PROPERTIES" | grep -E "(sdkDownload|android.injected.build.abi)" || true
-
+        
       # - name: Fastlane match
       #   if: matrix.platform == 'ios'
       #   run: bundle exec fastlane ios certificates && bundle exec fastlane ios update_settings
