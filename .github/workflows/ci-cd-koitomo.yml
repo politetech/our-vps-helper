@@ -106,12 +106,12 @@ jobs:
           echo "version-value=$(get_version)" >> "$GITHUB_OUTPUT" 
           echo "build-number-value=$(get_build_number)" >> "$GITHUB_OUTPUT"
 
-      - name: Send message
-        run: |
-          curl -X POST \
-            -H 'Content-Type: application/json' \
-            -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"🎬 - Start build: ${{ steps.get-message-information.outputs.value }}\", \"disable_notification\": false}" \
-            https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
+      # - name: Send message
+      #   run: |
+      #     curl -X POST \
+      #       -H 'Content-Type: application/json' \
+      #       -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"🎬 - Start build: ${{ steps.get-message-information.outputs.value }}\", \"disable_notification\": false}" \
+      #       https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
 
       - name: Log value
         run: |
@@ -316,10 +316,10 @@ jobs:
             -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"✅ - Success ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}\", \"disable_notification\": false}" \
             https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
 
-      - name: Send message
-        if: failure()
-        run: |
-          curl -X POST \
-            -H 'Content-Type: application/json' \
-            -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"💥 - Failure ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}\", \"disable_notification\": false}" \
-            https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
+      # - name: Send message
+      #   if: failure()
+      #   run: |
+      #     curl -X POST \
+      #       -H 'Content-Type: application/json' \
+      #       -d "{\"chat_id\": \"${{ env.TELEGRAM_CHAT_ID }}\", \"text\": \"💥 - Failure ${{ matrix.format }}: ${{ needs.init.outputs.message-information }}\", \"disable_notification\": false}" \
+      #       https://api.telegram.org/bot${{ env.TELEGRAM_BOT_TOKEN }}/sendMessage
