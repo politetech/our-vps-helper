@@ -69,10 +69,8 @@ jobs:
           if [[ "$REF_NAME" =~ "prd" ]]; then
             MATRIX='${{ env.BUILD_MATRIX_PRD }}'
           fi
-          # Filter out iOS builds temporarily
-          MATRIX_FILTERED=$(echo "$MATRIX" | jq '[.[] | select(.platform != "ios")]')
           echo "value<<EOF" >> $GITHUB_OUTPUT
-          echo "$MATRIX_FILTERED" >> $GITHUB_OUTPUT
+          echo "$MATRIX" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Set env
