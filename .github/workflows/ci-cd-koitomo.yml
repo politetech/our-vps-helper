@@ -284,21 +284,13 @@ jobs:
       - name: Update version and build number
         run: bundle exec fastlane ${{ matrix.platform }} update_version_and_build_number
 
-      - name: Check cache Pods
-        if: matrix.format == 'IPA'
-        id: cache-primes
-        uses: actions/cache@v4
-        with:
-          path: |
-            ios/Pods
-            ios/Podfile.lock
-          key: koitomo-cache-pods-${{ hashFiles('pubspec.lock') }}
-
       - name: Pod install
-        # if: ${{ (matrix.format == 'IPA') && (steps.cache-primes.outputs.cache-hit != 'true') }}
         if: matrix.format == 'IPA'
         working-directory: ios
-        run: bundle exec pod install
+        run: |
+          rm -f Podfile.lock
+          bundle exec pod deintegrate
+          bundle exec pod install
 
       - name: Build ${{ matrix.format }}
         id: build
